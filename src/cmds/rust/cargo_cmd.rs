@@ -303,7 +303,7 @@ fn run_build(args: &[String], verbose: u8) -> Result<i32> {
         "build",
         args,
         verbose,
-        Box::new(BlockStreamFilter::new(CargoBuildHandler::new())),
+        Box::new(BlockStreamFilter::new(CargoBuildHandler::new()).with_max_blocks(CAP_ERRORS)),
     )
 }
 
@@ -312,7 +312,7 @@ fn run_test(args: &[String], verbose: u8) -> Result<i32> {
         "test",
         args,
         verbose,
-        Box::new(BlockStreamFilter::new(CargoTestHandler::new())),
+        Box::new(BlockStreamFilter::new(CargoTestHandler::new()).with_max_blocks(CAP_ERRORS)),
     )
 }
 
@@ -325,7 +325,7 @@ fn run_check(args: &[String], verbose: u8) -> Result<i32> {
         "check",
         args,
         verbose,
-        Box::new(BlockStreamFilter::new(CargoBuildHandler::new())),
+        Box::new(BlockStreamFilter::new(CargoBuildHandler::new()).with_max_blocks(CAP_ERRORS)),
     )
 }
 
@@ -2127,6 +2127,31 @@ error: aborting due to 1 previous error
         assert!(result.contains("mismatched types"), "got: {}", result);
         assert!(result.contains("1 errors"), "got: {}", result);
         assert!(!result.contains("aborting"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_cargo_build_stream_caps_blocks() {
+        let total = CAP_ERRORS + 3;
+        let mut input = String::new();
+        for i in 0..total {
+            input.push_str(&format!("error[E0308]: mismatched types {}\n", i));
+            input.push_str(&format!(" --> src/main.rs:{}:1\n", i));
+        }
+        let mut f = BlockStreamFilter::new(CargoBuildHandler::new()).with_max_blocks(CAP_ERRORS);
+        let result = run_block_filter(&mut f, &input, 101);
+
+        let emitted = result.matches("mismatched types").count();
+        assert_eq!(emitted, CAP_ERRORS, "streamed blocks must be capped: {}", result);
+        assert!(
+            result.contains(&format!("… +{} more issues", total - CAP_ERRORS)),
+            "expected overflow hint: {}",
+            result
+        );
+        assert!(
+            result.contains(&format!("cargo build: {} errors", total)),
+            "summary must report the real total: {}",
+            result
+        );
     }
 
     #[test]

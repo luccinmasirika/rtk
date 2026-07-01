@@ -26,6 +26,8 @@ pub struct BlockStreamFilter<H: BlockHandler> {
     in_block: bool,
     current_block: Vec<String>,
     blocks_emitted: usize,
+    max_blocks: Option<usize>,
+    blocks_suppressed: usize,
 }
 
 impl<H: BlockHandler> BlockStreamFilter<H> {
@@ -35,7 +37,14 @@ impl<H: BlockHandler> BlockStreamFilter<H> {
             in_block: false,
             current_block: Vec::new(),
             blocks_emitted: 0,
+            max_blocks: None,
+            blocks_suppressed: 0,
         }
+    }
+
+    pub fn with_max_blocks(mut self, max: usize) -> Self {
+        self.max_blocks = Some(max);
+        self
     }
 
     fn emit_block(&mut self) -> Option<String> {
@@ -44,6 +53,10 @@ impl<H: BlockHandler> BlockStreamFilter<H> {
         }
         let block = self.current_block.join("\n");
         self.current_block.clear();
+        if matches!(self.max_blocks, Some(max) if self.blocks_emitted >= max) {
+            self.blocks_suppressed += 1;
+            return None;
+        }
         self.blocks_emitted += 1;
         Some(format!("{}\n", block))
     }
@@ -81,7 +94,15 @@ impl<H: BlockHandler> StreamFilter for BlockStreamFilter<H> {
     }
 
     fn on_exit(&mut self, exit_code: i32, raw: &str) -> Option<String> {
-        self.handler.format_summary(exit_code, raw)
+        let summary = self.handler.format_summary(exit_code, raw);
+        if self.blocks_suppressed == 0 {
+            return summary;
+        }
+        let mut out = format!("… +{} more issues\n", self.blocks_suppressed);
+        if let Some(summary) = summary {
+            out.push_str(&summary);
+        }
+        Some(out)
     }
 }
 
@@ -903,6 +924,46 @@ pub(crate) mod tests {
         let mut f = BlockStreamFilter::new(TestHandler);
         let result = run_block_filter(&mut f, "nothing here\njust text\n", 0);
         assert_eq!(result, "DONE\n");
+    }
+
+    #[test]
+    fn test_block_filter_caps_emitted_blocks() {
+        let mut f = BlockStreamFilter::new(TestHandler).with_max_blocks(2);
+        let input = "ERROR a\nERROR b\nERROR c\nERROR d\n";
+        let result = run_block_filter(&mut f, input, 1);
+        assert!(result.contains("ERROR a"), "got: {}", result);
+        assert!(result.contains("ERROR b"), "got: {}", result);
+        assert!(
+            !result.contains("ERROR c"),
+            "capped blocks must not emit: {}",
+            result
+        );
+        assert!(
+            !result.contains("ERROR d"),
+            "capped blocks must not emit: {}",
+            result
+        );
+        assert!(result.contains("… +2 more issues\n"), "got: {}", result);
+        assert!(
+            result.ends_with("DONE\n"),
+            "summary must follow the hint: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_block_filter_uncapped_emits_all() {
+        let mut f = BlockStreamFilter::new(TestHandler);
+        let input = "ERROR a\nERROR b\nERROR c\n";
+        let result = run_block_filter(&mut f, input, 1);
+        assert!(result.contains("ERROR a"));
+        assert!(result.contains("ERROR b"));
+        assert!(result.contains("ERROR c"));
+        assert!(
+            !result.contains("more issues"),
+            "no cap means no hint: {}",
+            result
+        );
     }
 
     #[test]
